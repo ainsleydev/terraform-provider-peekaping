@@ -521,12 +521,24 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		in.PushToken = plan.PushToken.ValueString()
 	}
 
+	// Save user-configured tag_ids and notification_ids before API call
+	// These must be preserved to prevent "inconsistent result after apply" errors
+	// when the API returns different values than what was configured
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
 	m, err := r.client.CreateMonitor(ctx, in)
 	if err != nil {
 		resp.Diagnostics.AddError("create monitor failed", err.Error())
 		return
 	}
 	setModelFromMonitor(ctx, &plan, m)
+
+	// Restore user-configured tag_ids and notification_ids
+	// The API may return different/additional IDs, but Terraform expects
+	// the state to match what the user configured in their plan
+	plan.TagIDs = planTagIDs
+	plan.NotificationIDs = planNotificationIDs
 
 	// Preserve the plan's active value to maintain Terraform state consistency
 	// The API may return different defaults than what the plan specifies
@@ -559,11 +571,10 @@ func (r *MonitorResource) Read(ctx context.Context, req resource.ReadRequest, re
 		"active":           m.Active,
 	})
 
-	// Use regular field mapping but don't touch tag_ids and notification_ids
-	// since the API doesn't return these fields and we want to preserve current state
+	// Use API values for all fields including tag_ids and notification_ids
+	// This allows terraform refresh to detect drift from manual dashboard changes
 	setModelFromMonitor(ctx, &state, m)
 
-	// Don't modify tag_ids and notification_ids - let Terraform preserve them from current state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -631,6 +642,11 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 		upd.PushToken = &v
 	}
 
+	// Save user-configured tag_ids and notification_ids before API call
+	// These must be preserved to prevent "inconsistent result after apply" errors
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
 	// Use state.ID instead of plan.ID
 	_, err := r.client.UpdateMonitor(ctx, state.ID.ValueString(), upd)
 	if err != nil {
@@ -652,6 +668,13 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	// Note: We don't set CreatedAt/UpdatedAt here as they can change during updates
 
 	setModelFromMonitorWithState(&plan, fullMonitor, &state)
+
+	// Restore user-configured tag_ids and notification_ids
+	// The API may return different/additional IDs, but Terraform expects
+	// the state to match what the user configured in their plan
+	plan.TagIDs = planTagIDs
+	plan.NotificationIDs = planNotificationIDs
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
