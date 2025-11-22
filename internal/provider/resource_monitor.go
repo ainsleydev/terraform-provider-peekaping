@@ -336,40 +336,56 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 		})
 	}
 
-	// Check each element: if config is unknown but plan is null, fix it
-	// OR if both are null (Terraform Core bug affects both), convert to unknown
+	// Check each element for different scenarios:
+	// 1. Config is unknown, plan is null -> Use config (preserve unknown)
+	// 2. Config is known, plan is null -> Use config (plan expansion resolved the value)
+	// 3. Both are null -> During initial plan, can't fix without breaking legitimate nulls
 	needsFix := false
-	hasNullElements := false
+	hasKnownConfigNullPlan := false
+	hasBothNull := false
 
 	for i := range configElements {
 		configElem := configElements[i]
 		planElem := planElements[i]
 
 		// If config element is unknown but plan element is null
-		// This is the Terraform core bug!
+		// This is the Terraform core bug during initial plan!
 		if configElem.IsUnknown() && planElem.IsNull() {
 			needsFix = true
 			break
 		}
 
-		// If BOTH are null, this is also the bug (data source reference became null)
+		// If config is KNOWN but plan is null
+		// This happens during plan expansion when data sources become known
+		if !configElem.IsNull() && !configElem.IsUnknown() && planElem.IsNull() {
+			hasKnownConfigNullPlan = true
+		}
+
+		// If BOTH are null during initial plan
 		if configElem.IsNull() && planElem.IsNull() {
-			hasNullElements = true
+			hasBothNull = true
 		}
 	}
 
-	if needsFix {
-		// Use config value instead of plan value to preserve unknowns
-		tflog.Warn(ctx, "Preserving unknown elements from config (working around Terraform core null bug)", map[string]interface{}{
-			"attribute": req.Path.String(),
+	// Case 1 & 2: Config has better values (unknown or known) than plan (null)
+	// Use config value to preserve unknowns or accept resolved values
+	if needsFix || hasKnownConfigNullPlan {
+		tflog.Debug(ctx, "Using config value instead of plan value", map[string]interface{}{
+			"attribute":               req.Path.String(),
+			"reason":                  map[string]bool{
+				"preserving_unknowns":     needsFix,
+				"accepting_resolved":      hasKnownConfigNullPlan,
+			},
 		})
 		resp.PlanValue = req.ConfigValue
-	} else if hasNullElements {
-		// Both config and plan have nulls - the bug corrupted both
+	} else if hasBothNull {
+		// Both config and plan have nulls - the bug corrupted both during initial plan
 		// We can't fix this without breaking legitimate null values
-		tflog.Warn(ctx, "Detected null elements in both config and plan - Terraform Core bug #36653 may have corrupted values", map[string]interface{}{
+		tflog.Debug(ctx, "Both config and plan have null elements - Terraform Core bug #36653", map[string]interface{}{
 			"attribute": req.Path.String(),
 		})
+		// Still use config value as it's the source of truth
+		resp.PlanValue = req.ConfigValue
 	}
 }
 
@@ -556,6 +572,19 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Save tag_ids and notification_ids from plan immediately
+	// During plan expansion, these contain resolved data source values
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
+	// Debug: Log what we received in the plan
+	tflog.Debug(ctx, "Create: Plan values received", map[string]interface{}{
+		"tag_ids_null":    planTagIDs.IsNull(),
+		"tag_ids_unknown": planTagIDs.IsUnknown(),
+		"tag_ids_len":     len(planTagIDs.Elements()),
+		"tag_ids_values":  toStrSlice(planTagIDs),
+	})
+
 	notificationIDs := toStrSlice(plan.NotificationIDs)
 	if notificationIDs == nil {
 		notificationIDs = []string{}
@@ -620,16 +649,12 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		in.PushToken = plan.PushToken.ValueString()
 	}
 
-	// Save plan values for tag_ids and notification_ids before API call
-	// These are Optional-only (not Computed) to work around Terraform Core bug #36653
-	planTagIDs := plan.TagIDs
-	planNotificationIDs := plan.NotificationIDs
-
 	m, err := r.client.CreateMonitor(ctx, in)
 	if err != nil {
 		resp.Diagnostics.AddError("create monitor failed", err.Error())
 		return
 	}
+
 	setModelFromMonitor(ctx, &plan, m)
 
 	// Preserve the plan's active value to maintain Terraform state consistency
@@ -638,7 +663,8 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		plan.Active = types.BoolValue(active)
 	}
 
-	// Restore plan values for tag_ids and notification_ids (not computed from API)
+	// Use tag_ids and notification_ids from the REQUEST plan (not API response)
+	// These are Optional-only (not Computed) and contain resolved data source values
 	plan.TagIDs = planTagIDs
 	plan.NotificationIDs = planNotificationIDs
 
@@ -689,17 +715,17 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	// Save tag_ids and notification_ids from plan immediately
+	// During plan expansion, these contain resolved data source values
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
 	// Get the current state to get the ID
 	var state monitorResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// Save plan values for tag_ids and notification_ids
-	// These are Optional-only (not Computed) to work around Terraform Core bug #36653
-	planTagIDs := plan.TagIDs
-	planNotificationIDs := plan.NotificationIDs
 
 	upd := peekaping.MonitorUpdate{
 		NotificationIDs: toStrSlice(plan.NotificationIDs), // Always send, even if empty (API requires it)
