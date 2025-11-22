@@ -406,13 +406,11 @@ func (r *MonitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"notification_ids": schema.ListAttribute{
 				Optional:    true,
-				Computed:    true,
 				ElementType: types.StringType,
 				Description: "List of notification channel IDs",
 			},
 			"tag_ids": schema.ListAttribute{
 				Optional:    true,
-				Computed:    true,
 				ElementType: types.StringType,
 				Description: "List of tag IDs",
 			},
@@ -522,8 +520,7 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	// Save user-configured tag_ids and notification_ids before API call
-	// These must be preserved to prevent "inconsistent result after apply" errors
-	// when the API returns different values than what was configured
+	// These must be preserved because setModelFromMonitor uses API response values
 	planTagIDs := plan.TagIDs
 	planNotificationIDs := plan.NotificationIDs
 
@@ -534,11 +531,10 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	setModelFromMonitor(ctx, &plan, m)
 
-	// Merge plan tag_ids and notification_ids with API values
-	// Use plan values where known, API values for null/unknown elements
-	// This handles cases where plan elements reference resources not yet created during planning
-	plan.TagIDs = mergeStringListWithPlan(planTagIDs, plan.TagIDs)
-	plan.NotificationIDs = mergeStringListWithPlan(planNotificationIDs, plan.NotificationIDs)
+	// Restore user-configured tag_ids and notification_ids
+	// Since these are Optional-only (not Computed), Terraform expects the configured values
+	plan.TagIDs = planTagIDs
+	plan.NotificationIDs = planNotificationIDs
 
 	// Preserve the plan's active value to maintain Terraform state consistency
 	// The API may return different defaults than what the plan specifies
@@ -643,7 +639,7 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	// Save user-configured tag_ids and notification_ids before API call
-	// These must be preserved to prevent "inconsistent result after apply" errors
+	// These must be preserved because setModelFromMonitorWithState uses API response values
 	planTagIDs := plan.TagIDs
 	planNotificationIDs := plan.NotificationIDs
 
@@ -666,14 +662,12 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	// This prevents Terraform from seeing computed field changes as inconsistencies
 	// Note: We don't set Status here as it can legitimately change during updates
 	// Note: We don't set CreatedAt/UpdatedAt here as they can change during updates
-
 	setModelFromMonitorWithState(&plan, fullMonitor, &state)
 
-	// Merge plan tag_ids and notification_ids with API values
-	// Use plan values where known, API values for null/unknown elements
-	// This handles cases where plan elements reference resources not yet created during planning
-	plan.TagIDs = mergeStringListWithPlan(planTagIDs, plan.TagIDs)
-	plan.NotificationIDs = mergeStringListWithPlan(planNotificationIDs, plan.NotificationIDs)
+	// Restore user-configured tag_ids and notification_ids
+	// Since these are Optional-only (not Computed), Terraform expects the configured values
+	plan.TagIDs = planTagIDs
+	plan.NotificationIDs = planNotificationIDs
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -705,37 +699,6 @@ func toStrSlice(xs []types.String) []string {
 		}
 	}
 	return out
-}
-
-// mergeStringListWithPlan merges plan values with API values, handling null/unknown elements.
-// For each position:
-// - If the plan has a known, non-null value, use it
-// - Otherwise, use the API value (if available)
-// This prevents "inconsistent final plan" errors when plan elements are null/unknown
-// (e.g., when referencing resources that don't exist yet during planning).
-func mergeStringListWithPlan(plan []types.String, apiValues []types.String) []types.String {
-	// If plan is nil or empty, use API values
-	if len(plan) == 0 {
-		return apiValues
-	}
-
-	// Create result with same length as plan
-	result := make([]types.String, len(plan))
-
-	for i := range plan {
-		// If plan element is known and not null, use it
-		if !plan[i].IsNull() && !plan[i].IsUnknown() {
-			result[i] = plan[i]
-		} else if i < len(apiValues) {
-			// Otherwise use API value if available
-			result[i] = apiValues[i]
-		} else {
-			// No API value available, keep as null
-			result[i] = types.StringNull()
-		}
-	}
-
-	return result
 }
 
 func setModelFromMonitor(ctx context.Context, m *monitorResourceModel, from *peekaping.Monitor) {
