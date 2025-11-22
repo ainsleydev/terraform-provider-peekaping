@@ -10,10 +10,12 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -291,8 +293,8 @@ type monitorResourceModel struct {
 	ResendInterval  types.Int64          `tfsdk:"resend_interval"`
 	ProxyID         types.String         `tfsdk:"proxy_id"`
 	PushToken       types.String         `tfsdk:"push_token"`
-	NotificationIDs []types.String       `tfsdk:"notification_ids"`
-	TagIDs          []types.String       `tfsdk:"tag_ids"`
+	NotificationIDs types.List           `tfsdk:"notification_ids"`
+	TagIDs          types.List           `tfsdk:"tag_ids"`
 	Status          types.Int64          `tfsdk:"status"`
 	CreatedAt       types.String         `tfsdk:"created_at"`
 	UpdatedAt       types.String         `tfsdk:"updated_at"`
@@ -408,11 +410,17 @@ func (r *MonitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:    true,
 				ElementType: types.StringType,
 				Description: "List of notification channel IDs",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"tag_ids": schema.ListAttribute{
 				Optional:    true,
 				ElementType: types.StringType,
 				Description: "List of tag IDs",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"status": schema.Int64Attribute{
 				Computed:    true,
@@ -693,11 +701,17 @@ func (r *MonitorResource) ImportState(ctx context.Context, req resource.ImportSt
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func toStrSlice(xs []types.String) []string {
-	out := make([]string, 0, len(xs))
-	for _, s := range xs {
-		if !s.IsNull() {
-			out = append(out, s.ValueString())
+func toStrSlice(list types.List) []string {
+	if list.IsNull() || list.IsUnknown() {
+		return []string{}
+	}
+	elements := list.Elements()
+	out := make([]string, 0, len(elements))
+	for _, elem := range elements {
+		if strVal, ok := elem.(types.String); ok {
+			if !strVal.IsNull() && !strVal.IsUnknown() {
+				out = append(out, strVal.ValueString())
+			}
 		}
 	}
 	return out
@@ -790,23 +804,25 @@ func setModelFromMonitor(ctx context.Context, m *monitorResourceModel, from *pee
 	}
 
 	// Handle TagIDs - populate from API response
-	if from.TagIDs != nil {
-		m.TagIDs = make([]types.String, len(from.TagIDs))
-		for i, id := range from.TagIDs {
-			m.TagIDs[i] = types.StringValue(id)
+	if len(from.TagIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.TagIDs))
+		for _, id := range from.TagIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.TagIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.TagIDs = []types.String{}
+		m.TagIDs = types.ListNull(types.StringType)
 	}
 
 	// Handle NotificationIDs - populate from API response
-	if from.NotificationIDs != nil {
-		m.NotificationIDs = make([]types.String, len(from.NotificationIDs))
-		for i, id := range from.NotificationIDs {
-			m.NotificationIDs[i] = types.StringValue(id)
+	if len(from.NotificationIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.NotificationIDs))
+		for _, id := range from.NotificationIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.NotificationIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.NotificationIDs = []types.String{}
+		m.NotificationIDs = types.ListNull(types.StringType)
 	}
 }
 
@@ -913,22 +929,24 @@ func setModelFromMonitorWithState(m *monitorResourceModel, from *peekaping.Monit
 	}
 
 	// Handle TagIDs - populate from API response
-	if from.TagIDs != nil {
-		m.TagIDs = make([]types.String, len(from.TagIDs))
-		for i, id := range from.TagIDs {
-			m.TagIDs[i] = types.StringValue(id)
+	if len(from.TagIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.TagIDs))
+		for _, id := range from.TagIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.TagIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.TagIDs = []types.String{}
+		m.TagIDs = types.ListNull(types.StringType)
 	}
 
 	// Handle NotificationIDs - populate from API response
-	if from.NotificationIDs != nil {
-		m.NotificationIDs = make([]types.String, len(from.NotificationIDs))
-		for i, id := range from.NotificationIDs {
-			m.NotificationIDs[i] = types.StringValue(id)
+	if len(from.NotificationIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.NotificationIDs))
+		for _, id := range from.NotificationIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.NotificationIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.NotificationIDs = []types.String{}
+		m.NotificationIDs = types.ListNull(types.StringType)
 	}
 }
