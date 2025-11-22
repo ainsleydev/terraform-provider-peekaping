@@ -666,7 +666,6 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	// This prevents Terraform from seeing computed field changes as inconsistencies
 	// Note: We don't set Status here as it can legitimately change during updates
 	// Note: We don't set CreatedAt/UpdatedAt here as they can change during updates
-
 	setModelFromMonitorWithState(&plan, fullMonitor, &state)
 
 	// Merge plan tag_ids and notification_ids with API values
