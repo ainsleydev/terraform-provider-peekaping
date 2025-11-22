@@ -558,6 +558,7 @@ func (r *MonitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"notification_ids": schema.ListAttribute{
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 				Description: "List of notification channel IDs. Note: Drift detection disabled due to Terraform Core bug #36653 with deferred data sources.",
 				PlanModifiers: []planmodifier.List{
@@ -566,6 +567,7 @@ func (r *MonitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"tag_ids": schema.ListAttribute{
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 				Description: "List of tag IDs. Note: Drift detection disabled due to Terraform Core bug #36653 with deferred data sources.",
 				PlanModifiers: []planmodifier.List{
