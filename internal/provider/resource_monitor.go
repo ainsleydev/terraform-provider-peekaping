@@ -520,7 +520,8 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	// Save user-configured tag_ids and notification_ids before API call
-	// These must be preserved because setModelFromMonitor uses API response values
+	// These must be preserved to prevent "inconsistent result after apply" errors
+	// when the API returns different values than what was configured
 	planTagIDs := plan.TagIDs
 	planNotificationIDs := plan.NotificationIDs
 
@@ -639,7 +640,7 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	// Save user-configured tag_ids and notification_ids before API call
-	// These must be preserved because setModelFromMonitorWithState uses API response values
+	// These must be preserved to prevent "inconsistent result after apply" errors
 	planTagIDs := plan.TagIDs
 	planNotificationIDs := plan.NotificationIDs
 
@@ -662,6 +663,7 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	// This prevents Terraform from seeing computed field changes as inconsistencies
 	// Note: We don't set Status here as it can legitimately change during updates
 	// Note: We don't set CreatedAt/UpdatedAt here as they can change during updates
+
 	setModelFromMonitorWithState(&plan, fullMonitor, &state)
 
 	// Restore user-configured tag_ids and notification_ids
