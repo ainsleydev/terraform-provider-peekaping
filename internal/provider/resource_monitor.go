@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -272,6 +273,61 @@ func (v monitorResendIntervalValidator) ValidateInt64(ctx context.Context, req v
 	}
 }
 
+// preserveUnknownFromConfigModifier works around Terraform core bug #36653
+// where data source references in lists are incorrectly sent as null instead of unknown.
+// See: https://github.com/hashicorp/terraform/issues/36653
+type preserveUnknownFromConfigModifier struct{}
+
+func (m preserveUnknownFromConfigModifier) Description(_ context.Context) string {
+	return "Preserves unknown values from config when Terraform core incorrectly sends null"
+}
+
+func (m preserveUnknownFromConfigModifier) MarkdownDescription(_ context.Context) string {
+	return "Preserves unknown values from config when Terraform core incorrectly sends null (issue #36653)"
+}
+
+func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
+	// If config is unknown or null, nothing to do
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	// If plan is unknown or null, nothing to do
+	if req.PlanValue.IsNull() || req.PlanValue.IsUnknown() {
+		return
+	}
+
+	// Check if config and plan have same number of elements
+	configElements := req.ConfigValue.Elements()
+	planElements := req.PlanValue.Elements()
+
+	if len(configElements) != len(planElements) {
+		return // Lengths don't match, let normal validation handle it
+	}
+
+	// Check each element: if config is unknown but plan is null, fix it
+	needsFix := false
+	for i := range configElements {
+		configElem := configElements[i]
+		planElem := planElements[i]
+
+		// If config element is unknown but plan element is null
+		// This is the Terraform core bug!
+		if configElem.IsUnknown() && planElem.IsNull() {
+			needsFix = true
+			break
+		}
+	}
+
+	if needsFix {
+		// Use config value instead of plan value to preserve unknowns
+		tflog.Debug(ctx, "Preserving unknown elements from config (working around Terraform core null bug)", map[string]interface{}{
+			"attribute": req.Path.String(),
+		})
+		resp.PlanValue = req.ConfigValue
+	}
+}
+
 type MonitorResource struct {
 	client *peekaping.Client
 }
@@ -291,8 +347,8 @@ type monitorResourceModel struct {
 	ResendInterval  types.Int64          `tfsdk:"resend_interval"`
 	ProxyID         types.String         `tfsdk:"proxy_id"`
 	PushToken       types.String         `tfsdk:"push_token"`
-	NotificationIDs []types.String       `tfsdk:"notification_ids"`
-	TagIDs          []types.String       `tfsdk:"tag_ids"`
+	NotificationIDs types.List           `tfsdk:"notification_ids"`
+	TagIDs          types.List           `tfsdk:"tag_ids"`
 	Status          types.Int64          `tfsdk:"status"`
 	CreatedAt       types.String         `tfsdk:"created_at"`
 	UpdatedAt       types.String         `tfsdk:"updated_at"`
@@ -409,12 +465,18 @@ func (r *MonitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:    true,
 				ElementType: types.StringType,
 				Description: "List of notification channel IDs",
+				PlanModifiers: []planmodifier.List{
+					preserveUnknownFromConfigModifier{},
+				},
 			},
 			"tag_ids": schema.ListAttribute{
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
 				Description: "List of tag IDs",
+				PlanModifiers: []planmodifier.List{
+					preserveUnknownFromConfigModifier{},
+				},
 			},
 			"status": schema.Int64Attribute{
 				Computed:    true,
@@ -674,11 +736,18 @@ func (r *MonitorResource) ImportState(ctx context.Context, req resource.ImportSt
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func toStrSlice(xs []types.String) []string {
-	out := make([]string, 0, len(xs))
-	for _, s := range xs {
-		if !s.IsNull() {
-			out = append(out, s.ValueString())
+func toStrSlice(list types.List) []string {
+	if list.IsNull() || list.IsUnknown() {
+		return []string{}
+	}
+
+	elements := list.Elements()
+	out := make([]string, 0, len(elements))
+	for _, elem := range elements {
+		if strVal, ok := elem.(types.String); ok {
+			if !strVal.IsNull() && !strVal.IsUnknown() {
+				out = append(out, strVal.ValueString())
+			}
 		}
 	}
 	return out
@@ -771,23 +840,25 @@ func setModelFromMonitor(ctx context.Context, m *monitorResourceModel, from *pee
 	}
 
 	// Handle TagIDs - populate from API response
-	if from.TagIDs != nil {
-		m.TagIDs = make([]types.String, len(from.TagIDs))
-		for i, id := range from.TagIDs {
-			m.TagIDs[i] = types.StringValue(id)
+	if len(from.TagIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.TagIDs))
+		for _, id := range from.TagIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.TagIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.TagIDs = []types.String{}
+		m.TagIDs = types.ListNull(types.StringType)
 	}
 
 	// Handle NotificationIDs - populate from API response
-	if from.NotificationIDs != nil {
-		m.NotificationIDs = make([]types.String, len(from.NotificationIDs))
-		for i, id := range from.NotificationIDs {
-			m.NotificationIDs[i] = types.StringValue(id)
+	if len(from.NotificationIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.NotificationIDs))
+		for _, id := range from.NotificationIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.NotificationIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.NotificationIDs = []types.String{}
+		m.NotificationIDs = types.ListNull(types.StringType)
 	}
 }
 
@@ -894,22 +965,24 @@ func setModelFromMonitorWithState(m *monitorResourceModel, from *peekaping.Monit
 	}
 
 	// Handle TagIDs - populate from API response
-	if from.TagIDs != nil {
-		m.TagIDs = make([]types.String, len(from.TagIDs))
-		for i, id := range from.TagIDs {
-			m.TagIDs[i] = types.StringValue(id)
+	if len(from.TagIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.TagIDs))
+		for _, id := range from.TagIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.TagIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.TagIDs = []types.String{}
+		m.TagIDs = types.ListNull(types.StringType)
 	}
 
 	// Handle NotificationIDs - populate from API response
-	if from.NotificationIDs != nil {
-		m.NotificationIDs = make([]types.String, len(from.NotificationIDs))
-		for i, id := range from.NotificationIDs {
-			m.NotificationIDs[i] = types.StringValue(id)
+	if len(from.NotificationIDs) > 0 {
+		ids := make([]attr.Value, 0, len(from.NotificationIDs))
+		for _, id := range from.NotificationIDs {
+			ids = append(ids, types.StringValue(id))
 		}
+		m.NotificationIDs = types.ListValueMust(types.StringType, ids)
 	} else {
-		m.NotificationIDs = []types.String{}
+		m.NotificationIDs = types.ListNull(types.StringType)
 	}
 }
