@@ -289,11 +289,21 @@ func (m preserveUnknownFromConfigModifier) MarkdownDescription(_ context.Context
 func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
 	// If config is unknown or null, nothing to do
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		tflog.Debug(ctx, "Config is null or unknown", map[string]interface{}{
+			"attribute":      req.Path.String(),
+			"config_null":    req.ConfigValue.IsNull(),
+			"config_unknown": req.ConfigValue.IsUnknown(),
+		})
 		return
 	}
 
 	// If plan is unknown or null, nothing to do
 	if req.PlanValue.IsNull() || req.PlanValue.IsUnknown() {
+		tflog.Debug(ctx, "Plan is null or unknown", map[string]interface{}{
+			"attribute":    req.Path.String(),
+			"plan_null":    req.PlanValue.IsNull(),
+			"plan_unknown": req.PlanValue.IsUnknown(),
+		})
 		return
 	}
 
@@ -301,12 +311,36 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 	configElements := req.ConfigValue.Elements()
 	planElements := req.PlanValue.Elements()
 
+	tflog.Debug(ctx, "Examining list elements", map[string]interface{}{
+		"attribute":    req.Path.String(),
+		"config_len":   len(configElements),
+		"plan_len":     len(planElements),
+	})
+
 	if len(configElements) != len(planElements) {
 		return // Lengths don't match, let normal validation handle it
 	}
 
+	// Log each element's state
+	for i := range configElements {
+		configElem := configElements[i]
+		planElem := planElements[i]
+
+		tflog.Debug(ctx, "Element state", map[string]interface{}{
+			"attribute":         req.Path.String(),
+			"index":             i,
+			"config_null":       configElem.IsNull(),
+			"config_unknown":    configElem.IsUnknown(),
+			"plan_null":         planElem.IsNull(),
+			"plan_unknown":      planElem.IsUnknown(),
+		})
+	}
+
 	// Check each element: if config is unknown but plan is null, fix it
+	// OR if both are null (Terraform Core bug affects both), convert to unknown
 	needsFix := false
+	hasNullElements := false
+
 	for i := range configElements {
 		configElem := configElements[i]
 		planElem := planElements[i]
@@ -317,14 +351,25 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 			needsFix = true
 			break
 		}
+
+		// If BOTH are null, this is also the bug (data source reference became null)
+		if configElem.IsNull() && planElem.IsNull() {
+			hasNullElements = true
+		}
 	}
 
 	if needsFix {
 		// Use config value instead of plan value to preserve unknowns
-		tflog.Debug(ctx, "Preserving unknown elements from config (working around Terraform core null bug)", map[string]interface{}{
+		tflog.Warn(ctx, "Preserving unknown elements from config (working around Terraform core null bug)", map[string]interface{}{
 			"attribute": req.Path.String(),
 		})
 		resp.PlanValue = req.ConfigValue
+	} else if hasNullElements {
+		// Both config and plan have nulls - the bug corrupted both
+		// We can't fix this without breaking legitimate null values
+		tflog.Warn(ctx, "Detected null elements in both config and plan - Terraform Core bug #36653 may have corrupted values", map[string]interface{}{
+			"attribute": req.Path.String(),
+		})
 	}
 }
 
