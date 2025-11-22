@@ -381,13 +381,38 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 		})
 		resp.PlanValue = req.ConfigValue
 	} else if hasBothNull {
-		// Both config and plan have nulls - the bug corrupted both during initial plan
-		// We can't fix this without breaking legitimate null values
-		tflog.Warn(ctx, "MODIFIER ACTION: Both null - copying config (BUG #36653)", map[string]interface{}{
+		// Both config and plan have nulls - Terraform Core bug #36653 corrupted both
+		// Convert null elements to unknown to show "(known after apply)" in plan
+		tflog.Warn(ctx, "MODIFIER ACTION: Converting null elements to unknown (BUG #36653)", map[string]interface{}{
 			"attribute": req.Path.String(),
 		})
-		// Still use config value as it's the source of truth
-		resp.PlanValue = req.ConfigValue
+
+		// Build a new list with unknown values replacing nulls
+		fixedElements := make([]attr.Value, len(configElements))
+		for i := range configElements {
+			configElem := configElements[i]
+			planElem := planElements[i]
+
+			// If both are null, this is likely a deferred data source - make it unknown
+			if configElem.IsNull() && planElem.IsNull() {
+				fixedElements[i] = types.StringUnknown()
+			} else {
+				// Keep the existing value (could be unknown or known)
+				fixedElements[i] = planElem
+			}
+		}
+
+		// Create new list with fixed elements
+		fixedList, diags := types.ListValue(types.StringType, fixedElements)
+		if diags.HasError() {
+			tflog.Error(ctx, "Failed to create fixed list", map[string]interface{}{
+				"attribute": req.Path.String(),
+				"errors":    diags.Errors(),
+			})
+			return
+		}
+
+		resp.PlanValue = fixedList
 	} else {
 		tflog.Warn(ctx, "MODIFIER ACTION: No changes needed", map[string]interface{}{
 			"attribute": req.Path.String(),
