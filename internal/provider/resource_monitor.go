@@ -507,21 +507,13 @@ func (r *MonitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"notification_ids": schema.ListAttribute{
 				Optional:    true,
-				Computed:    true,
 				ElementType: types.StringType,
-				Description: "List of notification channel IDs",
-				PlanModifiers: []planmodifier.List{
-					preserveUnknownFromConfigModifier{},
-				},
+				Description: "List of notification channel IDs. Note: Drift detection disabled due to Terraform Core bug #36653 with deferred data sources.",
 			},
 			"tag_ids": schema.ListAttribute{
 				Optional:    true,
-				Computed:    true,
 				ElementType: types.StringType,
-				Description: "List of tag IDs",
-				PlanModifiers: []planmodifier.List{
-					preserveUnknownFromConfigModifier{},
-				},
+				Description: "List of tag IDs. Note: Drift detection disabled due to Terraform Core bug #36653 with deferred data sources.",
 			},
 			"status": schema.Int64Attribute{
 				Computed:    true,
@@ -628,6 +620,11 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		in.PushToken = plan.PushToken.ValueString()
 	}
 
+	// Save plan values for tag_ids and notification_ids before API call
+	// These are Optional-only (not Computed) to work around Terraform Core bug #36653
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
 	m, err := r.client.CreateMonitor(ctx, in)
 	if err != nil {
 		resp.Diagnostics.AddError("create monitor failed", err.Error())
@@ -640,6 +637,10 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 	if !plan.Active.IsNull() {
 		plan.Active = types.BoolValue(active)
 	}
+
+	// Restore plan values for tag_ids and notification_ids (not computed from API)
+	plan.TagIDs = planTagIDs
+	plan.NotificationIDs = planNotificationIDs
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -666,11 +667,18 @@ func (r *MonitorResource) Read(ctx context.Context, req resource.ReadRequest, re
 		"active":           m.Active,
 	})
 
-	// Use regular field mapping but don't touch tag_ids and notification_ids
-	// since the API doesn't return these fields and we want to preserve current state
+	// Save current state values for tag_ids and notification_ids
+	// These are Optional-only (not Computed) to work around Terraform Core bug #36653
+	stateTagIDs := state.TagIDs
+	stateNotificationIDs := state.NotificationIDs
+
+	// Populate from API response
 	setModelFromMonitor(ctx, &state, m)
 
-	// Don't modify tag_ids and notification_ids - let Terraform preserve them from current state
+	// Restore tag_ids and notification_ids from previous state (not computed from API)
+	state.TagIDs = stateTagIDs
+	state.NotificationIDs = stateNotificationIDs
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -687,6 +695,11 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Save plan values for tag_ids and notification_ids
+	// These are Optional-only (not Computed) to work around Terraform Core bug #36653
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
 
 	upd := peekaping.MonitorUpdate{
 		NotificationIDs: toStrSlice(plan.NotificationIDs), // Always send, even if empty (API requires it)
@@ -759,6 +772,11 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	// Note: We don't set CreatedAt/UpdatedAt here as they can change during updates
 
 	setModelFromMonitorWithState(&plan, fullMonitor, &state)
+
+	// Restore plan values for tag_ids and notification_ids (not computed from API)
+	plan.TagIDs = planTagIDs
+	plan.NotificationIDs = planNotificationIDs
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
