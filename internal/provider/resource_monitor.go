@@ -521,12 +521,24 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		in.PushToken = plan.PushToken.ValueString()
 	}
 
+	// Save user-configured tag_ids and notification_ids before API call
+	// These must be preserved to prevent "inconsistent result after apply" errors
+	// when the API returns different values than what was configured
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
 	m, err := r.client.CreateMonitor(ctx, in)
 	if err != nil {
 		resp.Diagnostics.AddError("create monitor failed", err.Error())
 		return
 	}
 	setModelFromMonitor(ctx, &plan, m)
+
+	// Merge plan tag_ids and notification_ids with API values
+	// Use plan values where known, API values for null/unknown elements
+	// This handles cases where plan elements reference resources not yet created during planning
+	plan.TagIDs = mergeStringListWithPlan(planTagIDs, plan.TagIDs)
+	plan.NotificationIDs = mergeStringListWithPlan(planNotificationIDs, plan.NotificationIDs)
 
 	// Preserve the plan's active value to maintain Terraform state consistency
 	// The API may return different defaults than what the plan specifies
@@ -559,11 +571,10 @@ func (r *MonitorResource) Read(ctx context.Context, req resource.ReadRequest, re
 		"active":           m.Active,
 	})
 
-	// Use regular field mapping but don't touch tag_ids and notification_ids
-	// since the API doesn't return these fields and we want to preserve current state
+	// Use API values for all fields including tag_ids and notification_ids
+	// This allows terraform refresh to detect drift from manual dashboard changes
 	setModelFromMonitor(ctx, &state, m)
 
-	// Don't modify tag_ids and notification_ids - let Terraform preserve them from current state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -631,6 +642,11 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 		upd.PushToken = &v
 	}
 
+	// Save user-configured tag_ids and notification_ids before API call
+	// These must be preserved to prevent "inconsistent result after apply" errors
+	planTagIDs := plan.TagIDs
+	planNotificationIDs := plan.NotificationIDs
+
 	// Use state.ID instead of plan.ID
 	_, err := r.client.UpdateMonitor(ctx, state.ID.ValueString(), upd)
 	if err != nil {
@@ -652,6 +668,13 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	// Note: We don't set CreatedAt/UpdatedAt here as they can change during updates
 
 	setModelFromMonitorWithState(&plan, fullMonitor, &state)
+
+	// Merge plan tag_ids and notification_ids with API values
+	// Use plan values where known, API values for null/unknown elements
+	// This handles cases where plan elements reference resources not yet created during planning
+	plan.TagIDs = mergeStringListWithPlan(planTagIDs, plan.TagIDs)
+	plan.NotificationIDs = mergeStringListWithPlan(planNotificationIDs, plan.NotificationIDs)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -682,6 +705,37 @@ func toStrSlice(xs []types.String) []string {
 		}
 	}
 	return out
+}
+
+// mergeStringListWithPlan merges plan values with API values, handling null/unknown elements.
+// For each position:
+// - If the plan has a known, non-null value, use it
+// - Otherwise, use the API value (if available)
+// This prevents "inconsistent final plan" errors when plan elements are null/unknown
+// (e.g., when referencing resources that don't exist yet during planning).
+func mergeStringListWithPlan(plan []types.String, apiValues []types.String) []types.String {
+	// If plan is nil or empty, use API values
+	if len(plan) == 0 {
+		return apiValues
+	}
+
+	// Create result with same length as plan
+	result := make([]types.String, len(plan))
+
+	for i := range plan {
+		// If plan element is known and not null, use it
+		if !plan[i].IsNull() && !plan[i].IsUnknown() {
+			result[i] = plan[i]
+		} else if i < len(apiValues) {
+			// Otherwise use API value if available
+			result[i] = apiValues[i]
+		} else {
+			// No API value available, keep as null
+			result[i] = types.StringNull()
+		}
+	}
+
+	return result
 }
 
 func setModelFromMonitor(ctx context.Context, m *monitorResourceModel, from *peekaping.Monitor) {
