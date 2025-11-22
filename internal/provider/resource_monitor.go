@@ -287,9 +287,13 @@ func (m preserveUnknownFromConfigModifier) MarkdownDescription(_ context.Context
 }
 
 func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
+	tflog.Warn(ctx, "===== PLAN MODIFIER CALLED =====", map[string]interface{}{
+		"attribute": req.Path.String(),
+	})
+
 	// If config is unknown or null, nothing to do
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
-		tflog.Debug(ctx, "Config is null or unknown", map[string]interface{}{
+		tflog.Warn(ctx, "Config is null or unknown - RETURNING EARLY", map[string]interface{}{
 			"attribute":      req.Path.String(),
 			"config_null":    req.ConfigValue.IsNull(),
 			"config_unknown": req.ConfigValue.IsUnknown(),
@@ -299,7 +303,7 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 
 	// If plan is unknown or null, nothing to do
 	if req.PlanValue.IsNull() || req.PlanValue.IsUnknown() {
-		tflog.Debug(ctx, "Plan is null or unknown", map[string]interface{}{
+		tflog.Warn(ctx, "Plan is null or unknown - RETURNING EARLY", map[string]interface{}{
 			"attribute":    req.Path.String(),
 			"plan_null":    req.PlanValue.IsNull(),
 			"plan_unknown": req.PlanValue.IsUnknown(),
@@ -326,13 +330,13 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 		configElem := configElements[i]
 		planElem := planElements[i]
 
-		tflog.Debug(ctx, "Element state", map[string]interface{}{
-			"attribute":         req.Path.String(),
-			"index":             i,
-			"config_null":       configElem.IsNull(),
-			"config_unknown":    configElem.IsUnknown(),
-			"plan_null":         planElem.IsNull(),
-			"plan_unknown":      planElem.IsUnknown(),
+		tflog.Warn(ctx, "ELEMENT STATE", map[string]interface{}{
+			"attribute":      req.Path.String(),
+			"index":          i,
+			"config_null":    configElem.IsNull(),
+			"config_unknown": configElem.IsUnknown(),
+			"plan_null":      planElem.IsNull(),
+			"plan_unknown":   planElem.IsUnknown(),
 		})
 	}
 
@@ -370,23 +374,29 @@ func (m preserveUnknownFromConfigModifier) PlanModifyList(ctx context.Context, r
 	// Case 1 & 2: Config has better values (unknown or known) than plan (null)
 	// Use config value to preserve unknowns or accept resolved values
 	if needsFix || hasKnownConfigNullPlan {
-		tflog.Debug(ctx, "Using config value instead of plan value", map[string]interface{}{
-			"attribute":               req.Path.String(),
-			"reason":                  map[string]bool{
-				"preserving_unknowns":     needsFix,
-				"accepting_resolved":      hasKnownConfigNullPlan,
-			},
+		tflog.Warn(ctx, "MODIFIER ACTION: Using config value instead of plan value", map[string]interface{}{
+			"attribute":           req.Path.String(),
+			"preserving_unknowns": needsFix,
+			"accepting_resolved":  hasKnownConfigNullPlan,
 		})
 		resp.PlanValue = req.ConfigValue
 	} else if hasBothNull {
 		// Both config and plan have nulls - the bug corrupted both during initial plan
 		// We can't fix this without breaking legitimate null values
-		tflog.Debug(ctx, "Both config and plan have null elements - Terraform Core bug #36653", map[string]interface{}{
+		tflog.Warn(ctx, "MODIFIER ACTION: Both null - copying config (BUG #36653)", map[string]interface{}{
 			"attribute": req.Path.String(),
 		})
 		// Still use config value as it's the source of truth
 		resp.PlanValue = req.ConfigValue
+	} else {
+		tflog.Warn(ctx, "MODIFIER ACTION: No changes needed", map[string]interface{}{
+			"attribute": req.Path.String(),
+		})
 	}
+
+	tflog.Warn(ctx, "===== PLAN MODIFIER FINISHED =====", map[string]interface{}{
+		"attribute": req.Path.String(),
+	})
 }
 
 type MonitorResource struct {
