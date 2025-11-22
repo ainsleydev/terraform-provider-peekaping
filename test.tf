@@ -19,12 +19,19 @@ resource "peekaping_tag" "test_project" {
 }
 
 # Reference existing tags via data sources - these will be UNKNOWN during plan
+# The lifecycle depends_on forces them to be read AFTER the resource is created
 data "peekaping_tag" "production" {
   name = "Production"
+
+  # Force this to be read during apply (not during plan)
+  depends_on = [peekaping_tag.test_project]
 }
 
 data "peekaping_tag" "webkit" {
   name = "WebKit"
+
+  # Force this to be read during apply (not during plan)
+  depends_on = [peekaping_tag.test_project]
 }
 
 # Create a monitor using mixed known/unknown tag IDs
