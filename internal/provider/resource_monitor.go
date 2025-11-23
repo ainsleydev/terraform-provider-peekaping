@@ -598,6 +598,9 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 		in.PushToken = plan.PushToken.ValueString()
 	}
 
+	// Save original push_token - API returns empty even when we send it
+	originalPushToken := plan.PushToken
+
 	m, err := r.client.CreateMonitor(ctx, in)
 	if err != nil {
 		resp.Diagnostics.AddError("create monitor failed", err.Error())
@@ -619,6 +622,12 @@ func (r *MonitorResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	if !originalNotificationIDs.IsNull() && !originalNotificationIDs.IsUnknown() {
 		plan.NotificationIDs = originalNotificationIDs
+	}
+
+	// Preserve the originally planned push_token to prevent "inconsistent final plan" errors
+	// The API returns empty push_token even when we send it
+	if !originalPushToken.IsNull() && !originalPushToken.IsUnknown() {
+		plan.PushToken = originalPushToken
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -646,9 +655,10 @@ func (r *MonitorResource) Read(ctx context.Context, req resource.ReadRequest, re
 		"active":           m.Active,
 	})
 
-	// Save current tag_ids and notification_ids before updating from API
+	// Save current tag_ids, notification_ids, and push_token before updating from API
 	currentTagIDs := state.TagIDs
 	currentNotificationIDs := state.NotificationIDs
+	currentPushToken := state.PushToken
 
 	// Update state from API response
 	setModelFromMonitor(ctx, &state, m)
@@ -657,6 +667,11 @@ func (r *MonitorResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// These are managed by plan modifiers and should not be overwritten during refresh
 	state.TagIDs = currentTagIDs
 	state.NotificationIDs = currentNotificationIDs
+
+	// Preserve push_token from state as the API returns empty
+	if !currentPushToken.IsNull() && !currentPushToken.IsUnknown() {
+		state.PushToken = currentPushToken
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -668,9 +683,10 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	// Save the original tag_ids and notification_ids to preserve them after API response
+	// Save the original tag_ids, notification_ids, and push_token to preserve them after API response
 	originalTagIDs := plan.TagIDs
 	originalNotificationIDs := plan.NotificationIDs
+	originalPushToken := plan.PushToken
 
 	// Get the current state to get the ID
 	var state monitorResourceModel
@@ -759,6 +775,12 @@ func (r *MonitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	if !originalNotificationIDs.IsNull() && !originalNotificationIDs.IsUnknown() {
 		plan.NotificationIDs = originalNotificationIDs
+	}
+
+	// Preserve the originally planned push_token to prevent "inconsistent final plan" errors
+	// The API returns empty push_token even when we send it
+	if !originalPushToken.IsNull() && !originalPushToken.IsUnknown() {
+		plan.PushToken = originalPushToken
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
